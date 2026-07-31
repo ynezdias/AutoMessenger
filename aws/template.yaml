@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AutoMessenger - SMS agent bridge. Salesforce/Text Torrent webhook -> SQS ->
+  local Ollama agent -> SQS -> Salesforce sender Lambda.
+
+Parameters:
+  WebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: Shared secret Salesforce must send in the X-Auth-Token header.
+  SfTokenUrl:
+    Type: String
+    Default: REPLACE_ME_https://yourdomain.my.salesforce.com/services/oauth2/token
+  SfClientId:
+    Type: String
+    NoEcho: true
+    Default: REPLACE_ME_CLIENT_ID
+  SfClientSecret:
+    Type: String
+    NoEcho: true
+    Default: REPLACE_ME_CLIENT_SECRET
+  SfMode:
+    Type: String
+    Default: sobject
+    AllowedValues: [sobject, flow]
+  SfSObject:
+    Type: String
+    Default: REPLACE_ME_SMS_OBJECT_API_NAME
+  SfFieldMap:
+    Type: String
+    Default: '{"Phone__c": "{phone}", "Body__c": "{message}"}'
+  SfFlowApiName:
+    Type: String
+    Default: ''
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 30
+
+Resources:
+  InboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: automessenger-inbound
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt InboundDLQ.Arn
+        maxReceiveCount: 5
+
+  InboundDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: automessenger-inbound-dlq
+      MessageRetentionPeriod: 1209600
+
+  OutboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: automessenger-outbound
+      VisibilityTimeout: 120
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OutboundDLQ.Arn
+        maxReceiveCount: 5
+
+  OutboundDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: automessenger-outbound-dlq
+      MessageRetentionPeriod: 1209600
+
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: automessenger-conversations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: phone
+          AttributeType: S
+      KeySchema:
+        - AttributeName: phone
+          KeyType: HASH
+
+  EscalationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: automessenger-escalations
+
+  InboundFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: automessenger-inbound
+      CodeUri: lambdas/inbound/
+      Handler: handler.lambda_handler
+      Environment:
+        Variables:
+          INBOUND_QUEUE_URL: !Ref InboundQueue
+          WEBHOOK_SECRET: !Ref WebhookSecret
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt InboundQueue.QueueName
+      Events:
+        Webhook:
+          Type: HttpApi
+          Properties:
+            Path: /inbound
+            Method: POST
+
+  OutboundFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: automessenger-outbound
+      CodeUri: lambdas/outbound/
+      Handler: handler.lambda_handler
+      Timeout: 60
+      Environment:
+        Variables:
+          SF_TOKEN_URL: !Ref SfTokenUrl
+          SF_CLIENT_ID: !Ref SfClientId
+          SF_CLIENT_SECRET: !Ref SfClientSecret
+          SF_MODE: !Ref SfMode
+          SF_SOBJECT: !Ref SfSObject
+          SF_FIELD_MAP: !Ref SfFieldMap
+          SF_FLOW_API_NAME: !Ref SfFlowApiName
+      Events:
+        Outbound:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OutboundQueue.Arn
+            BatchSize: 5
+
+  WorkerUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: automessenger-worker
+      Policies:
+        - PolicyName: automessenger-worker-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt InboundQueue.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt OutboundQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt ConversationsTable.Arn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref EscalationsTopic
+
+Outputs:
+  WebhookUrl:
+    Description: Give this URL to the Salesforce flow (POST, X-Auth-Token header)
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/inbound
+  InboundQueueUrl:
+    Value: !Ref InboundQueue
+  OutboundQueueUrl:
+    Value: !Ref OutboundQueue
+  ConversationsTableName:
+    Value: !Ref ConversationsTable
+  EscalationsTopicArn:
+    Value: !Ref EscalationsTopic
+  WorkerUserName:
+    Value: !Ref WorkerUser
