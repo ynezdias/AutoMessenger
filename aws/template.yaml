@@ -19,7 +19,15 @@ Parameters:
   SfClientSecret:
     Type: String
     NoEcho: true
-    Default: REPLACE_ME_CLIENT_SECRET
+    Default: ''
+  SfGrantType:
+    Type: String
+    Default: client_credentials
+    AllowedValues: [client_credentials, refresh_token]
+  SfRefreshToken:
+    Type: String
+    NoEcho: true
+    Default: ''
   SfMode:
     Type: String
     Default: sobject
@@ -119,8 +127,10 @@ Resources:
       Environment:
         Variables:
           SF_TOKEN_URL: !Ref SfTokenUrl
+          SF_GRANT_TYPE: !Ref SfGrantType
           SF_CLIENT_ID: !Ref SfClientId
           SF_CLIENT_SECRET: !Ref SfClientSecret
+          SF_REFRESH_TOKEN: !Ref SfRefreshToken
           SF_MODE: !Ref SfMode
           SF_SOBJECT: !Ref SfSObject
           SF_FIELD_MAP: !Ref SfFieldMap

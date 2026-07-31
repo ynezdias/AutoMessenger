@@ -13,8 +13,11 @@ Triggered by the outbound SQS queue. Two delivery modes, chosen by SF_MODE:
                    inputs phone / message / recordId; the flow calls Text
                    Torrent's own send action.
 
-Auth: OAuth 2.0 client credentials flow against a Salesforce Connected App
-(SF_TOKEN_URL, SF_CLIENT_ID, SF_CLIENT_SECRET).
+Auth (SF_GRANT_TYPE):
+  client_credentials  Connected App client-credentials flow (SF_CLIENT_ID,
+                      SF_CLIENT_SECRET)
+  refresh_token       long-lived refresh token (SF_REFRESH_TOKEN, SF_CLIENT_ID;
+                      e.g. the Salesforce CLI's PlatformCLI client)
 """
 import json
 import os
@@ -23,8 +26,10 @@ import urllib.parse
 import urllib.request
 
 SF_TOKEN_URL = os.environ["SF_TOKEN_URL"]  # https://yourdomain.my.salesforce.com/services/oauth2/token
+SF_GRANT_TYPE = os.environ.get("SF_GRANT_TYPE", "client_credentials")
 SF_CLIENT_ID = os.environ["SF_CLIENT_ID"]
-SF_CLIENT_SECRET = os.environ["SF_CLIENT_SECRET"]
+SF_CLIENT_SECRET = os.environ.get("SF_CLIENT_SECRET", "")
+SF_REFRESH_TOKEN = os.environ.get("SF_REFRESH_TOKEN", "")
 SF_MODE = os.environ.get("SF_MODE", "sobject")
 SF_SOBJECT = os.environ.get("SF_SOBJECT", "")
 SF_FIELD_MAP = json.loads(os.environ.get("SF_FIELD_MAP", "{}"))
@@ -42,13 +47,21 @@ def _get_token():
             "Salesforce is not configured yet. Update the stack parameters "
             "SfTokenUrl / SfClientId / SfClientSecret after creating the Connected App."
         )
-    body = urllib.parse.urlencode(
-        {
+    if SF_GRANT_TYPE == "refresh_token":
+        fields = {
+            "grant_type": "refresh_token",
+            "client_id": SF_CLIENT_ID,
+            "refresh_token": SF_REFRESH_TOKEN,
+        }
+        if SF_CLIENT_SECRET:
+            fields["client_secret"] = SF_CLIENT_SECRET
+    else:
+        fields = {
             "grant_type": "client_credentials",
             "client_id": SF_CLIENT_ID,
             "client_secret": SF_CLIENT_SECRET,
         }
-    ).encode()
+    body = urllib.parse.urlencode(fields).encode()
     req = urllib.request.Request(SF_TOKEN_URL, data=body)
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
