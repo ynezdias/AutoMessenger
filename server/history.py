@@ -32,6 +32,7 @@ class ConversationStore:
                 "record_id": "",
                 "merchant_interested": False,
                 "identity_streak": 0,
+                "last_msg_id": "",
                 "messages": [],
             }
         return convo

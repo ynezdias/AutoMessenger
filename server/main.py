@@ -20,12 +20,19 @@ log = logging.getLogger("main")
 IDENTITY_HINTS = ("who is this", "who's this", "who are you", "how did you get my number")
 
 
-def handle_inbound(store: history.ConversationStore, payload: dict, sqs=None) -> dict:
+def handle_inbound(store: history.ConversationStore, payload: dict, sqs=None,
+                   message_id: str | None = None) -> dict:
     """Process one inbound SMS payload and carry out the resulting action."""
     phone = str(payload["phone"]).strip()
     text = str(payload["message"]).strip()
 
     convo = store.get(phone)
+    if message_id and convo.get("last_msg_id") == message_id:
+        # SQS delivered this message a second time; never double-text a merchant.
+        log.info("%s duplicate delivery of %s, skipping", phone, message_id)
+        return {"action": "ignore", "reply": "", "notify_rep": False,
+                "merchant_interested": False}
+    convo["last_msg_id"] = message_id or ""
     convo["merchant_first"] = payload.get("merchantFirst") or convo.get("merchant_first", "")
     convo["company"] = payload.get("company") or convo.get("company", "")
     convo["record_id"] = payload.get("recordId") or convo.get("record_id", "")
@@ -128,8 +135,18 @@ def run_worker() -> None:
             continue
         for raw in resp.get("Messages", []):
             try:
+                # Generation can take several minutes across retries; keep the
+                # message invisible so a second worker/redelivery can't race us.
+                sqs.change_message_visibility(
+                    QueueUrl=config.INBOUND_QUEUE_URL,
+                    ReceiptHandle=raw["ReceiptHandle"],
+                    VisibilityTimeout=1800,
+                )
+            except Exception:
+                log.warning("could not extend visibility for %s", raw.get("MessageId"))
+            try:
                 payload = json.loads(raw["Body"])
-                result = handle_inbound(store, payload, sqs)
+                result = handle_inbound(store, payload, sqs, raw.get("MessageId"))
                 log.info("handled %s -> %s", payload.get("phone"), result["action"])
                 sqs.delete_message(
                     QueueUrl=config.INBOUND_QUEUE_URL,
