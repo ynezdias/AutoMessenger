@@ -74,10 +74,12 @@ def respond(convo: dict, incoming_text: str) -> dict:
     messages.append({"role": "user", "content": incoming_text})
 
     last_violations: list[str] = []
+    ollama_failures = 0
     for attempt in range(config.MAX_GENERATION_RETRIES):
         try:
             result = _call_ollama(messages)
         except Exception:
+            ollama_failures += 1
             log.exception("ollama call failed (attempt %d)", attempt + 1)
             continue
 
@@ -107,6 +109,11 @@ def respond(convo: dict, incoming_text: str) -> dict:
                 ),
             }
         )
+
+    if ollama_failures == config.MAX_GENERATION_RETRIES:
+        # Infrastructure problem, not a content problem: raise so the caller
+        # leaves the message on the queue and it retries once Ollama is back.
+        raise RuntimeError("ollama unavailable after retries")
 
     log.error("no clean reply after retries (%s), escalating", last_violations)
     return {

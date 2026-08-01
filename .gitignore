@@ -5,3 +5,4 @@ server/.local_conversations.json
 aws/packaged.yaml
 aws/deploy-params.txt
 .aws-sam/
+logs/
