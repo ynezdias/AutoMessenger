@@ -8,6 +8,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 
 from . import agent, config, history
 
@@ -114,11 +115,17 @@ def run_worker() -> None:
     log.info("polling %s with model %s", config.INBOUND_QUEUE_URL, config.OLLAMA_MODEL)
 
     while True:
-        resp = sqs.receive_message(
-            QueueUrl=config.INBOUND_QUEUE_URL,
-            MaxNumberOfMessages=5,
-            WaitTimeSeconds=20,
-        )
+        try:
+            resp = sqs.receive_message(
+                QueueUrl=config.INBOUND_QUEUE_URL,
+                MaxNumberOfMessages=5,
+                WaitTimeSeconds=20,
+            )
+        except Exception:
+            # Network blips must not kill the worker; back off and re-poll.
+            log.exception("poll failed, retrying in 15s")
+            time.sleep(15)
+            continue
         for raw in resp.get("Messages", []):
             try:
                 payload = json.loads(raw["Body"])
