@@ -32,9 +32,10 @@ _AMOUNT_WORDS = (
     "grand", "figures", "percent", "percentage", "apr",
 )
 
-# The standard funding range is the ONE amount Walter may state. Accept the
-# common spellings the model produces; everything else stays blocked.
-_ALLOWED_RANGE = re.compile(r"\$?\s?\b(?:20|50)\s?k\b|\$?\s?\b(?:20|50),?000\b", re.IGNORECASE)
+# The standard funding range is the ONE amount Walter may state, and only in
+# its canonical "20k"/"50k" spelling; "$50,000" style stays blocked so the
+# model is pushed back to the canonical form on regenerate.
+_ALLOWED_RANGE = re.compile(r"\$?\s?\b(?:20|50)k\b", re.IGNORECASE)
 
 _DASHES = "-‐‑‒–—―"
 
