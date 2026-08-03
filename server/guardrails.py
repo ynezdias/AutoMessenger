@@ -32,6 +32,10 @@ _AMOUNT_WORDS = (
     "grand", "figures", "percent", "percentage", "apr",
 )
 
+# The standard funding range is the ONE amount Walter may state. Accept the
+# common spellings the model produces; everything else stays blocked.
+_ALLOWED_RANGE = re.compile(r"\$?\s?\b(?:20|50)\s?k\b|\$?\s?\b(?:20|50),?000\b", re.IGNORECASE)
+
 _DASHES = "-‐‑‒–—―"
 
 _EMOJI_RE = re.compile(
@@ -93,9 +97,12 @@ def check(reply: str, upload_link: str) -> list[str]:
     if "@" in scrubbed:
         violations.append("contains an email address or @ symbol")
 
+    # The 20k to 50k funding range is allowed; scrub it before the digit check.
+    scrubbed_amounts = _ALLOWED_RANGE.sub(" ", scrubbed)
+
     # Digits: only 3 and 4 are ever legitimate ("3 or 4 months").
-    stray_digits = set(re.findall(r"\d", scrubbed)) - {"3", "4"}
-    if stray_digits or "$" in scrubbed or "%" in scrubbed:
+    stray_digits = set(re.findall(r"\d", scrubbed_amounts)) - {"3", "4"}
+    if stray_digits or "$" in scrubbed_amounts or "%" in scrubbed_amounts:
         violations.append("contains a number, dollar sign, or percent about the deal")
 
     lowered = scrubbed.lower()
