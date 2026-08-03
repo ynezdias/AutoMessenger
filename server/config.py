@@ -24,6 +24,8 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.6"))
 OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "300"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+PROMPT_MAX_MESSAGES = int(os.environ.get("PROMPT_MAX_MESSAGES", "12"))
 
 # --- Business ---
 UPLOAD_LINK = os.environ.get("UPLOAD_LINK", "")
