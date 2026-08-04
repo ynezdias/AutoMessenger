@@ -37,8 +37,11 @@ class ConversationStore:
             }
         return convo
 
-    def append(self, convo: dict, role: str, text: str) -> None:
-        convo["messages"].append({"role": role, "text": text, "ts": int(time.time())})
+    def append(self, convo: dict, role: str, text: str, origin: str = "") -> None:
+        msg = {"role": role, "text": text, "ts": int(time.time())}
+        if origin:
+            msg["origin"] = origin
+        convo["messages"].append(msg)
         convo["messages"] = convo["messages"][-config.HISTORY_MAX_MESSAGES:]
 
     def save(self, convo: dict) -> None:
@@ -92,7 +95,8 @@ def _from_dynamo(item: dict) -> dict:
     convo = dict(item)
     convo["identity_streak"] = int(convo.get("identity_streak", 0))
     convo["messages"] = [
-        {"role": m["role"], "text": m["text"], "ts": int(m["ts"])}
+        {"role": m["role"], "text": m["text"], "ts": int(m["ts"]),
+         **({"origin": m["origin"]} if m.get("origin") else {})}
         for m in convo.get("messages", [])
     ]
     return convo
