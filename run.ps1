@@ -6,7 +6,16 @@ New-Item -ItemType Directory -Force "$root\logs" | Out-Null
 Set-Location $root
 
 while ($true) {
-    if (-not (Get-Process ollama -ErrorAction SilentlyContinue)) {
+    # Probe the API, not the process: a hung Ollama keeps a live process
+    # with a dead API and must be killed and restarted.
+    $apiOk = $false
+    try {
+        $null = Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -UseBasicParsing -TimeoutSec 5
+        $apiOk = $true
+    } catch {}
+    if (-not $apiOk) {
+        Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Seconds 2
         Start-Process -FilePath $ollama -ArgumentList "serve" -WindowStyle Hidden
         Start-Sleep -Seconds 3
     }
