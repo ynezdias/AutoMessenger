@@ -7,8 +7,12 @@ one has its own conversation thread. Walter answers through the exact
 production pipeline: same model, guardrails, classification, and history
 handling. State lives in a local JSON file only - the real DynamoDB table, SQS
 queues, and SNS topic are never touched.
+
+Sends are processed on a background thread and the page polls /state, so slow
+generations survive proxies/tunnels that time out long-held HTTP requests.
 """
 import json
+import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -18,6 +22,9 @@ from . import config
 config.CONVERSATIONS_TABLE = ""
 config.OUTBOUND_QUEUE_URL = ""
 config.ESCALATIONS_TOPIC_ARN = ""
+# Sandbox-only stand-in so link-dropping behavior is testable before the real
+# upload page is configured. Production (.env) is unaffected.
+config.UPLOAD_LINK = config.UPLOAD_LINK or "https://secure.example.com/upload-test"
 
 from . import history, main as worker  # noqa: E402
 from .outreach import OPENER, load_contacts  # noqa: E402
@@ -36,6 +43,11 @@ if not CONTACTS:
 
 store = history.ConversationStore()
 
+# Per-contact status of the in-flight generation, guarded by _LOCK.
+# phone -> {"busy": bool, "action": str, "notify_rep": bool, "error": str}
+_PENDING: dict[str, dict] = {}
+_LOCK = threading.Lock()
+
 
 def seed() -> None:
     for contact in CONTACTS.values():
@@ -50,21 +62,45 @@ def seed() -> None:
 def state(phone: str) -> dict:
     contact = CONTACTS[phone]
     convo = store.get(phone)
+    with _LOCK:
+        pending = dict(_PENDING.get(phone, {}))
     return {
         "phone": phone,
         "first": contact["first_name"],
         "status": convo["status"],
+        "busy": pending.get("busy", False),
+        "last_action": pending.get("action", ""),
+        "notify_rep": pending.get("notify_rep", False),
+        "error": pending.get("error", ""),
         "contacts": [
             {"phone": c["phone"], "first": c["first_name"],
              "company": c.get("company", "")}
             for c in CONTACTS.values()
         ],
-        "messages": [{"role": m["role"], "text": m["text"]} for m in convo["messages"]],
+        "messages": [{"role": m["role"], "text": m["text"],
+                      "origin": m.get("origin", "")} for m in convo["messages"]],
     }
 
 
 def _default_contact() -> str:
     return next(iter(CONTACTS))
+
+
+def _process_send(phone: str, contact: dict, text: str, origin: str = "") -> None:
+    try:
+        result = worker.handle_inbound(
+            store,
+            {"phone": phone, "message": text, "origin": origin,
+             "merchantFirst": contact["first_name"],
+             "company": contact.get("company", "")},
+        )
+        outcome = {"busy": False, "action": result["action"],
+                   "notify_rep": result.get("notify_rep", False), "error": ""}
+    except Exception as exc:  # e.g. Ollama down: surface it in the UI
+        outcome = {"busy": False, "action": "error",
+                   "notify_rep": False, "error": str(exc)}
+    with _LOCK:
+        _PENDING[phone] = outcome
 
 
 PAGE = """<!doctype html>
@@ -81,6 +117,7 @@ PAGE = """<!doctype html>
   .walter { background: #2b2b2e; align-self: flex-start; }
   .merchant { background: #0a84ff; color: white; align-self: flex-end; }
   .sys { color: #999; font-size: 12px; text-align: center; margin: 4px 0; }
+  .origin { color: #888; font-size: 11px; align-self: flex-end; margin: -2px 4px 2px 0; }
   form { display: flex; gap: 8px; }
   input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #444;
           background: #1c1c1e; color: #eee; }
@@ -91,8 +128,8 @@ PAGE = """<!doctype html>
 </style></head><body>
 <h3>Walter &mdash; local test line <small id="status"></small></h3>
 <select id="who"></select>
-<div class="sys">you are texting as <span id="asname"></span>. replies take a
-minute while the local model thinks.</div>
+<div class="sys">you are texting as <span id="asname"></span>. replies can take
+a few minutes while the local model thinks - the page updates by itself.</div>
 <div id="thread"></div>
 <form id="f"><input id="msg" autocomplete="off" placeholder="text Walter back...">
 <button id="send">Send</button></form>
@@ -100,7 +137,10 @@ minute while the local model thinks.</div>
 <script>
 const thread = document.getElementById('thread');
 const who = document.getElementById('who');
+const btn = document.getElementById('send');
 let current = '';
+let timer = null;
+let lastNoted = '';
 function render(s) {
   current = s.phone;
   document.getElementById('status').textContent =
@@ -120,40 +160,51 @@ function render(s) {
     d.className = 'b ' + (m.role === 'walter' ? 'walter' : 'merchant');
     d.textContent = m.text;
     thread.appendChild(d);
+    if (m.role !== 'walter' && m.origin) {
+      const c = document.createElement('div');
+      c.className = 'origin';
+      c.textContent = 'via ' + m.origin;
+      thread.appendChild(c);
+    }
   }
+  if (s.busy) {
+    const n = document.createElement('div');
+    n.className = 'sys'; n.textContent = 'Walter is typing...';
+    thread.appendChild(n);
+  } else if (s.error && lastNoted !== 'error') {
+    const n = document.createElement('div');
+    n.className = 'sys'; n.textContent = 'error: ' + s.error;
+    thread.appendChild(n);
+  } else if (s.last_action && s.last_action !== 'reply') {
+    const n = document.createElement('div');
+    n.className = 'sys';
+    n.textContent = 'no auto reply: ' + s.last_action +
+      (s.notify_rep ? ' (rep notified)' : '');
+    thread.appendChild(n);
+  }
+  btn.disabled = s.busy;
+  btn.textContent = s.busy ? '...' : 'Send';
   window.scrollTo(0, document.body.scrollHeight);
+  if (timer) clearInterval(timer);
+  timer = s.busy ? setInterval(refresh, 3000) : null;
 }
 async function refresh() {
   const q = current ? '?c=' + encodeURIComponent(current) : '';
-  render(await (await fetch('/state' + q)).json());
+  try { render(await (await fetch('/state' + q)).json()); } catch (e) {}
 }
 who.onchange = () => { current = who.value; refresh(); };
 document.getElementById('f').onsubmit = async (e) => {
   e.preventDefault();
-  const box = document.getElementById('msg'), btn = document.getElementById('send');
+  const box = document.getElementById('msg');
   const text = box.value.trim();
-  if (!text) return;
-  box.value = ''; btn.disabled = true; btn.textContent = '...';
-  const d = document.createElement('div');
-  d.className = 'b merchant'; d.textContent = text; thread.appendChild(d);
-  const note = document.createElement('div');
-  note.className = 'sys'; note.textContent = 'Walter is typing...';
-  thread.appendChild(note);
-  window.scrollTo(0, document.body.scrollHeight);
+  if (!text || btn.disabled) return;
+  box.value = '';
   try {
-    const r = await (await fetch('/send', {method: 'POST',
+    await fetch('/send', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text, contact: current})})).json();
-    render(r.state);
-    if (r.action !== 'reply') {
-      const n = document.createElement('div');
-      n.className = 'sys';
-      n.textContent = 'no auto reply: ' + r.action +
-        (r.notify_rep ? ' (rep notified)' : '');
-      thread.appendChild(n);
-    }
-  } catch (err) { note.textContent = 'error: ' + err; }
-  btn.disabled = false; btn.textContent = 'Send';
+      body: JSON.stringify({message: text, contact: current})});
+  } catch (err) {}
+  refresh();
 };
 document.getElementById('reset').onclick = async (e) => {
   e.preventDefault();
@@ -200,19 +251,28 @@ class Handler(BaseHTTPRequestHandler):
             convo.update(status="active", messages=[], identity_streak=0,
                          merchant_interested=False)
             store.save(convo)
+            with _LOCK:
+                _PENDING.pop(key, None)
             seed()
             return self._json({"ok": True})
         if self.path == "/send":
             text = data.get("message", "").strip()
             if not text:
                 return self._json({"error": "empty"}, 400)
-            result = worker.handle_inbound(
-                store,
-                {"phone": key, "message": text,
-                 "merchantFirst": contact["first_name"],
-                 "company": contact.get("company", "")},
-            )
-            return self._json({**result, "state": state(key)})
+            # Requests relayed by the tunnel carry forwarding headers; direct
+            # local browser requests do not.
+            origin = ("shared link"
+                      if (self.headers.get("Cf-Connecting-Ip")
+                          or self.headers.get("X-Forwarded-For")) else "")
+            with _LOCK:
+                if _PENDING.get(key, {}).get("busy"):
+                    return self._json({"error": "walter is still typing"}, 409)
+                _PENDING[key] = {"busy": True, "action": "", "notify_rep": False,
+                                 "error": ""}
+            threading.Thread(
+                target=_process_send, args=(key, contact, text, origin), daemon=True
+            ).start()
+            return self._json({"queued": True, "state": state(key)})
         self._json({"error": "not found"}, 404)
 
     def log_message(self, fmt, *args):
