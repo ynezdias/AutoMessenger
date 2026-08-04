@@ -33,9 +33,23 @@ class ConversationStore:
                 "merchant_interested": False,
                 "identity_streak": 0,
                 "last_msg_id": "",
+                "followups_sent": 0,
                 "messages": [],
             }
         return convo
+
+    def list_all(self) -> list[dict]:
+        """Every conversation on file, for the follow-up sweep."""
+        if self._table is not None:
+            items, kwargs = [], {}
+            while True:
+                page = self._table.scan(**kwargs)
+                items.extend(page.get("Items", []))
+                if not page.get("LastEvaluatedKey"):
+                    break
+                kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+            return [_from_dynamo(item) for item in items]
+        return list(self._read_local().values())
 
     def append(self, convo: dict, role: str, text: str, origin: str = "") -> None:
         msg = {"role": role, "text": text, "ts": int(time.time())}
@@ -94,6 +108,7 @@ def _to_dynamo(convo: dict) -> dict:
 def _from_dynamo(item: dict) -> dict:
     convo = dict(item)
     convo["identity_streak"] = int(convo.get("identity_streak", 0))
+    convo["followups_sent"] = int(convo.get("followups_sent", 0))
     convo["messages"] = [
         {"role": m["role"], "text": m["text"], "ts": int(m["ts"]),
          **({"origin": m["origin"]} if m.get("origin") else {})}

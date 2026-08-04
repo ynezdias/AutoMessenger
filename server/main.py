@@ -10,7 +10,7 @@ import logging
 import sys
 import time
 
-from . import agent, config, guardrails, history
+from . import agent, config, followup, guardrails, history
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -140,8 +140,32 @@ def run_worker() -> None:
     sqs = boto3.client("sqs", region_name=config.AWS_REGION)
     store = history.ConversationStore()
     log.info("polling %s with model %s", config.INBOUND_QUEUE_URL, config.OLLAMA_MODEL)
+    if config.FOLLOWUP_ENABLED:
+        log.info("follow-ups on: up to %d, %dh apart, between %d:00 and %d:00 local",
+                 config.FOLLOWUP_MAX_ATTEMPTS, config.FOLLOWUP_AFTER_HOURS,
+                 config.FOLLOWUP_START_HOUR, config.FOLLOWUP_END_HOUR)
 
+    last_sweep = 0.0
     while True:
+        # Quiet merchants are chased here rather than on a separate schedule:
+        # the worker is the one always-on process, and being single-instance it
+        # cannot race itself into sending a merchant two nudges.
+        if (config.FOLLOWUP_ENABLED
+                and time.time() - last_sweep >= config.FOLLOWUP_SWEEP_SECONDS):
+            last_sweep = time.time()
+            try:
+                followup.sweep(
+                    store,
+                    lambda phone, text, convo: _send_outbound(sqs, phone, text, convo),
+                )
+            except followup.NotPermitted as exc:
+                # Expected until the stack is redeployed; one clear line beats a
+                # traceback every sweep.
+                log.error("follow-ups are off: %s", exc)
+            except Exception:
+                # A bad sweep must never stop the worker answering live texts.
+                log.exception("follow-up sweep failed, continuing to poll")
+
         try:
             resp = sqs.receive_message(
                 QueueUrl=config.INBOUND_QUEUE_URL,

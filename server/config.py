@@ -47,6 +47,20 @@ ESCALATIONS_TOPIC_ARN = os.environ.get("ESCALATIONS_TOPIC_ARN", "")
 MAX_GENERATION_RETRIES = int(os.environ.get("MAX_GENERATION_RETRIES", "3"))
 HISTORY_MAX_MESSAGES = int(os.environ.get("HISTORY_MAX_MESSAGES", "40"))
 
+# --- Follow-ups ---
+# A merchant who goes quiet gets nudged at most MAX_ATTEMPTS times, each one
+# AFTER_HOURS past the last thing Walter said. The hour window is a quiet-hours
+# guard so an automated text never lands at 3am; it is the SERVER's local time,
+# so set it conservatively when contacts span time zones.
+FOLLOWUP_ENABLED = os.environ.get("FOLLOWUP_ENABLED", "1").lower() not in ("0", "false")
+FOLLOWUP_AFTER_HOURS = int(os.environ.get("FOLLOWUP_AFTER_HOURS", "24"))
+FOLLOWUP_MAX_ATTEMPTS = int(os.environ.get("FOLLOWUP_MAX_ATTEMPTS", "2"))
+FOLLOWUP_START_HOUR = int(os.environ.get("FOLLOWUP_START_HOUR", "9"))
+FOLLOWUP_END_HOUR = int(os.environ.get("FOLLOWUP_END_HOUR", "19"))
+# How often the worker looks for due follow-ups. Cheap for a JSON file, a full
+# table scan on DynamoDB, so not every poll.
+FOLLOWUP_SWEEP_SECONDS = int(os.environ.get("FOLLOWUP_SWEEP_SECONDS", "300"))
+
 # Local JSON fallback store used when CONVERSATIONS_TABLE is not set (offline testing).
 LOCAL_STORE_PATH = ROOT / "server" / ".local_conversations.json"
 

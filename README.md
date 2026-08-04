@@ -53,7 +53,8 @@ Local test without touching AWS or Salesforce (talk to Walter in the console):
 python -m server.main --chat
 ```
 
-Guardrail unit tests: `python -m server.tests.test_guardrails`
+Unit tests (no AWS, no model): `python -m server.tests.test_guardrails`,
+`python -m server.tests.test_routing`, `python -m server.tests.test_followup`
 
 ## Configuration
 
@@ -77,10 +78,38 @@ Follow [salesforce/SETUP.md](salesforce/SETUP.md):
 3. Subscribe your phone/email to escalations:
    `aws sns subscribe --topic-arn arn:aws:sns:us-east-2:870730509769:automessenger-escalations --protocol email --notification-endpoint you@example.com`
 
+## Follow-ups
+
+A merchant who goes quiet is nudged automatically: once `FOLLOWUP_AFTER_HOURS`
+(24h) after Walter's last text, and once more 24h after that. Two, then never
+again. Opted-out, escalated, and already-answered conversations are skipped, and
+nothing sends outside `FOLLOWUP_START_HOUR`–`FOLLOWUP_END_HOUR` (9–19, the
+**server's** local time, so keep it conservative if contacts span time zones).
+
+The worker sweeps every `FOLLOWUP_SWEEP_SECONDS`. Set `FOLLOWUP_ENABLED=0` to
+turn the whole thing off. To see what is due without sending anything:
+
+```powershell
+python -m server.followup --dry-run
+```
+
+The nudge texts are fixed (`NUDGES` in [server/followup.py](server/followup.py)),
+not model-written, and are guardrail-checked by
+`python -m server.tests.test_followup`.
+
+**Requires `dynamodb:Scan`.** The sweep finds quiet conversations by scanning the
+table, which a stack deployed before this feature does not permit.
+`aws/template.yaml` already grants it — redeploy the `automessenger` stack and
+restart the worker. Until then the worker logs one line per sweep and keeps
+answering live texts normally; no follow-up goes out.
+
 ## Safety and compliance notes
 
 - Hard opt-out keywords (STOP, UNSUBSCRIBE, etc.) are honored in code before the
   model ever sees the text, and stopped numbers are never messaged again.
+- Follow-ups are capped at two per conversation and never sent to a number that
+  opted out or reached a human. Automated follow-ups carry the same TCPA
+  exposure as the opener, including quiet-hours rules.
 - Guardrails deterministically block numbers/rates/amounts, links other than the
   upload link, emojis, banned words, and dashes; a reply that cannot be cleaned
   is escalated to a human instead of sent.

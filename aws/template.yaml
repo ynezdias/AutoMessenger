@@ -165,6 +165,9 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
+                  # Scan backs the follow-up sweep, which has to find every
+                  # conversation that has gone quiet, not look one up by phone.
+                  - dynamodb:Scan
                 Resource: !GetAtt ConversationsTable.Arn
               - Effect: Allow
                 Action: sns:Publish

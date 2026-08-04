@@ -25,19 +25,42 @@ RESPONSE_SCHEMA = {
     "required": ["action", "reply", "notify_rep", "merchant_interested"],
 }
 
-# Deterministic opt-out keywords handled without the model (carrier compliance).
-OPT_OUT_KEYWORDS = {"stop", "stopall", "stop all", "unsubscribe", "cancel", "end", "quit",
-                    "alto", "parar", "remove me", "take me off", "don't text me again",
-                    "do not text me again", "stop texting", "leave me alone"}
+# Carrier keywords, matched only as the WHOLE message. These are ordinary words
+# in a sales thread ("cancel my other advance", "end of the month", "stop by the
+# shop"), so matching them loosely would silence live leads.
+OPT_OUT_KEYWORDS = {"stop", "stopall", "stop all", "unsubscribe", "cancel", "end",
+                    "quit", "alto", "parar"}
 
-# English and Spanish opt-out phrasings that need substring matching.
-_OPT_OUT_STEMS = (
-    # English: catch variations like "i am done", "i'm done", "done with you"
-    "i am done", "i'm done", "done with",
+# Explicit opt-out demands, matched ANYWHERE in the message. A real opt-out is
+# rarely the whole text: merchants write "stop texting me and whats the rate",
+# "please take me off your list", "just leave me alone". Matching these only as
+# a whole message (as this did until the 8/4 eval run caught it) let every one
+# of those through to the model, which answered them with a pitch.
+#
+# A false positive costs one live lead, and notify_rep is True on every opt-out
+# so a human sees it and can re-engage. A false negative is a TCPA violation.
+_OPT_OUT_PHRASES = [
+    r"\bstop (texting|messaging|texing|contacting|calling|hitting me up)",
+    r"\b(take|get) me off\b",
+    r"\bleave me alone\b",
+    r"\b(don'?t|do not|never|quit|stop) (text|texting|message|messaging|msg|"
+    r"contact|contacting|call|calling)\w* (me|us)\b",
+    r"\bremove me\b",
+    r"\b(lose|delete|forget) my number\b",
+    r"\bunsubscribe\b",
+    r"\bno longer (wish|want)\b",
+    r"\bi said stop\b",
+    # Only the conversation-ending sense. "i'm done with the upload" is a hot
+    # lead finishing a task, and hard-stopping them would be the worst possible
+    # moment to go silent.
+    r"\b(i'?m|i am) done (with (you|this|yall|y'all|all of this|all this)|"
+    r"talking|here)\b",
     # Spanish
-    "no me escribas", "no me escriban", "no me textees",
-    "dejame en paz", "déjame en paz", "no me contactes"
-)
+    r"\bno me (escribas?|escriban|textees|contactes|llames)\b",
+    r"\bd[eé]jame en paz\b",
+    r"\bd[eé]jenme en paz\b",
+    r"\bborrame de\b|\bb[oó]rrame de\b",
+]
 
 # Bare acknowledgments that legitimately need no reply. Anything else that the
 # model wants to ignore gets challenged once (see respond()).
@@ -69,8 +92,11 @@ _COMPLIANCE_RED_FLAGS = [
     # ownership / identity misrepresentation
     r"(business|account|company|llc) is (in|under) .{0,30}name",
     r"put my (info|information|name) on",
+    # 's / s' / s / bare, in either apostrophe order: "my cousin's statements"
+    # slipped the original s?'? spelling entirely.
     r"(send|use|upload|give) .{0,10}(my|his|her|their) (brother|sister|cousin|"
-    r"friend|partner|wife|husband|mom|dad|parent)s?'? .{0,15}(statement|account|info)",
+    r"friend|partner|wife|husband|mom|dad|parent)'?s?'? "
+    r".{0,15}(statement|account|info)",
     # concealment
     r"offshore",
     r"launder",
@@ -86,7 +112,24 @@ _COMPLIANCE_RED_FLAGS = [
     # concealment of debt (variants the model agreed to in cold testing)
     r"leave .{0,30}(loan|advance|debt|lender|funder|it) (off|out)",
     r"(dont|don't|do not) (tell|mention).{0,30}(funder|lender|bank)",
-    r"(funder|lender)s? .{0,25}find out",
+    # "finds out" as well as "find out", and concealment from an unnamed "they":
+    # the 8/4 eval run had "pay off my other advance before they find out" reach
+    # the model, which answered it with the standard statements ask.
+    r"before .{0,25}\bfinds? out\b",
+    r"\bwithout (them|him|her|anyone|anybody|the \w+) (knowing|finding out)\b",
+    r"\bso (they|he|she|nobody|no ?one) (don'?t|doesn'?t|dont|wont|won'?t|never) "
+    r"(know|find out|see)\b",
+    # "so nobody knows" is concealment on its own; "so they know" is not, which
+    # is why the unnamed-subject case above needs an explicit negation.
+    r"\bso (nobody|no ?one) (finds?|knows?|sees?)\b",
+    r"\b(hide|hiding) it from\b",
+    # documents or the link redirected to a number that is not the merchant's:
+    # the impersonation vector, and Walter must never resolve it himself
+    r"(send|text|forward|give|share)\w* .{0,40}(another|different|other|second|"
+    r"2nd) (number|phone|line|cell)",
+    r"(send|text|forward|give|share)\w* .{0,30}(to|at) .{0,25}(bookkeeper|"
+    r"accountant|partner|assistant|secretary|wife|husband|brother|sister|cousin|"
+    r"son|daughter) .{0,20}(at|on|number|phone)",
     # deposit padding phrasings that slip the in-and-out pattern
     r"(run|push|move|put) .{0,25}transfers? through",
     r"transfers? .{0,20}(through )?(first|before)",
@@ -170,6 +213,37 @@ _LEGAL_THREAT_RED_FLAGS = [
     r"legal action",
 ]
 
+# Intimidation. The thread ends and a human is told: there is no sales reply to
+# "i know where you people work", and the 8/4 eval run had the model answer both
+# of these with a pitch about funding.
+_THREAT_RED_FLAGS = [
+    r"\bi know where\b.{0,25}\b(live|work|are|office|located)\b",
+    r"know where to find (you|u|yall|y'all)",
+    r"(looking into|investigating|running a check on) (you|u|your (company|business))",
+    r"\b(cop|police|detective|fbi|sheriff|feds)\b.{0,30}\b(looking|after|onto|on) (you|u)\b",
+    r"watch your back",
+    r"you'?ll regret",
+    r"(come|coming) (find|after|for|to see) (you|u)\b",
+    r"(i'?m|im|we'?re|were) (coming|gonna come) (for|after) (you|u)\b",
+    r"\b(shut you down|end you|ruin you|destroy you)\b",
+]
+
+# Personal abuse. Walter never defends himself, never negotiates, and never asks
+# how they are feeling; a human takes it from here. Note that doubting Walter
+# ("is this a scam", "prove youre not a scammer") is a fair question and is
+# deliberately NOT here.
+_ABUSE_RED_FLAGS = [
+    r"\b(scumbag|scum ?bag|dirtbag|sleazeball|lowlife|piece of (shit|crap))\b",
+    r"\bf+u+c+k+ (you|off|u)\b|\bf\*+k (you|u)\b|\bstfu\b",
+    r"\byou('?re| are|r) (a |an )?(idiot|moron|loser|creep|clown|joke|liar|crook|"
+    r"thief|criminal|fraud|piece of)\b",
+    r"\b(one|1) ?star review\b",
+    r"(report|reporting|turn) (you|this|yall) (in )?to the (bbb|ftc|fcc|attorney "
+    r"general|ag|police|state|news)",
+    r"\b(expose|exposing) (you|your (company|business))\b",
+    r"\bgo to hell\b|\bkiss my ass\b",
+]
+
 _EMOJI_ONLY_RE = re.compile(
     r"^[\s\U0001F000-\U0001FAFF☀-➿⬀-⯿️‍.!?,]+$"
 )
@@ -204,6 +278,16 @@ def is_wellbeing_red_flag(text: str) -> bool:
 def is_legal_threat(text: str) -> bool:
     t = " ".join(text.lower().split())
     return any(re.search(p, t) for p in _LEGAL_THREAT_RED_FLAGS)
+
+
+def is_threat(text: str) -> bool:
+    t = " ".join(text.lower().split())
+    return any(re.search(p, t) for p in _THREAT_RED_FLAGS)
+
+
+def is_abusive(text: str) -> bool:
+    t = " ".join(text.lower().split())
+    return any(re.search(p, t) for p in _ABUSE_RED_FLAGS)
 
 
 def is_injection(text: str) -> bool:
@@ -312,10 +396,10 @@ def build_contact_message(merchant_first: str, company: str) -> str:
 
 
 def is_hard_opt_out(text: str) -> bool:
-    t = text.strip().lower().rstrip(".!")
+    t = " ".join(text.lower().split()).strip(".!?, ")
     if t in OPT_OUT_KEYWORDS:
         return True
-    return any(stem in t for stem in _OPT_OUT_STEMS)
+    return any(re.search(p, t) for p in _OPT_OUT_PHRASES)
 
 
 def _call_ollama(messages: list[dict]) -> dict:
@@ -404,6 +488,28 @@ def respond(convo: dict, incoming_text: str, extra_system: str = "") -> dict:
         log.warning("legal threat, stopping without model: %r", incoming_text)
         return {
             "action": "stop",
+            "reply": "",
+            "notify_rep": True,
+            "merchant_interested": False,
+        }
+
+    # Intimidation ends the thread. There is no sales reply to a threat, and the
+    # model reliably tries to talk its way out of one.
+    if is_threat(incoming_text):
+        log.warning("threat, stopping without model: %r", incoming_text)
+        return {
+            "action": "stop",
+            "reply": "",
+            "notify_rep": True,
+            "merchant_interested": False,
+        }
+
+    # Abuse goes to a human. Walter never defends himself and never asks how
+    # they are feeling, which is what the model does when left to answer.
+    if is_abusive(incoming_text):
+        log.warning("abusive message, escalating without model: %r", incoming_text)
+        return {
+            "action": "escalate_frustrated",
             "reply": "",
             "notify_rep": True,
             "merchant_interested": False,
