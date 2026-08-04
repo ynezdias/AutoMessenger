@@ -24,8 +24,13 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.6"))
 OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "300"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+# Must comfortably hold the persona (~6.6k tokens as of Aug 2026) + capped
+# history + guardrail retries. Overflow silently truncates the persona away.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
 PROMPT_MAX_MESSAGES = int(os.environ.get("PROMPT_MAX_MESSAGES", "12"))
+# One SMS plus the JSON wrapper is ~120 tokens. Capping generation stops a
+# runaway completion from costing minutes of CPU time on a single reply.
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "220"))
 
 # --- Business ---
 UPLOAD_LINK = os.environ.get("UPLOAD_LINK", "")
