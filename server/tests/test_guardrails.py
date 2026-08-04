@@ -10,6 +10,9 @@ CLEAN = [
     "still Walter at Pinnacle Point Financial, we talked a while back",
     "totally secure, the page is encrypted and only used for your statements",
     "claro, envíe sus estados de cuenta de los últimos 3 o 4 meses y le doy una respuesta hoy",
+    # the leaked-value rule is exact-match, so these words inside a real text stay fine
+    "that is not true, we spoke about your business last month",
+    "none of that changes what I need from you",
 ]
 
 DIRTY = {
@@ -25,6 +28,11 @@ DIRTY = {
     "email me at walter@ppf.com": "email",
     "it works like a factor rate deal": "structure term",
     "": "empty",
+    # the model leaks the boolean it means for notify_rep into the reply slot
+    "false": "leaked JSON value",
+    "true": "leaked JSON value",
+    "False.": "leaked JSON value, capitalized with punctuation",
+    "null": "leaked JSON value",
 }
 
 STRIP_CASES = {
