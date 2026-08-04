@@ -15,8 +15,8 @@ from pathlib import Path
 from . import config, guardrails, history
 
 OPENER = (
-    "Hi {first}, Walter with Pinnacle Point Financial. someone at your business "
-    "asked about funding a while back. still looking for working capital?"
+    "Hey {first}, it's Walter with Pinnacle Point Financial. are you looking "
+    "for funding for your business?"
 )
 
 

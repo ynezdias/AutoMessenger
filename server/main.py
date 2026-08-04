@@ -10,7 +10,7 @@ import logging
 import sys
 import time
 
-from . import agent, config, history
+from . import agent, config, guardrails, history
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -42,7 +42,7 @@ def handle_inbound(store: history.ConversationStore, payload: dict, sqs=None,
         return {"action": "ignore", "reply": "", "notify_rep": False,
                 "merchant_interested": False}
 
-    store.append(convo, "merchant", text)
+    store.append(convo, "merchant", text, origin=payload.get("origin") or "")
 
     # Carrier-style opt-out keywords never reach the model.
     if agent.is_hard_opt_out(text):
@@ -64,8 +64,9 @@ def handle_inbound(store: history.ConversationStore, payload: dict, sqs=None,
     if result.get("merchant_interested"):
         convo["merchant_interested"] = True
 
-    if action == "reply" and result["reply"]:
-        store.append(convo, "walter", result["reply"])
+    reply = result.get("reply")
+    if action == "reply" and reply and isinstance(reply, str):
+        store.append(convo, "walter", reply)
         _send_outbound(sqs, phone, result["reply"], convo)
     elif action == "stop":
         convo["status"] = "stopped"
@@ -80,6 +81,15 @@ def handle_inbound(store: history.ConversationStore, payload: dict, sqs=None,
 
 
 def _send_outbound(sqs, phone: str, message: str, convo: dict) -> None:
+    # Last line of defense: whatever upstream does, this function never emits
+    # an empty or rule-breaking text. Refusing is always safer than sending.
+    if not message or not message.strip():
+        log.error("REFUSED empty outbound to %s", phone)
+        return
+    violations = guardrails.check(message, config.UPLOAD_LINK)
+    if violations:
+        log.error("REFUSED outbound to %s, guardrail violations: %s", phone, violations)
+        return
     if sqs is None or not config.OUTBOUND_QUEUE_URL:
         log.info("[dry run] would send to %s: %s", phone, message)
         return
@@ -115,6 +125,16 @@ def run_worker() -> None:
     if not config.INBOUND_QUEUE_URL:
         sys.exit("INBOUND_QUEUE_URL is not set. Copy server/.env.example to "
                  "server/.env and fill in the stack outputs first.")
+    import socket
+
+    # Single-instance lock: two workers polling the same queue would race each
+    # other. The socket stays bound for the life of the process.
+    lock = socket.socket()
+    try:
+        lock.bind(("127.0.0.1", 8766))
+    except OSError:
+        sys.exit("another AutoMessenger worker is already running, exiting")
+
     import boto3
 
     sqs = boto3.client("sqs", region_name=config.AWS_REGION)
