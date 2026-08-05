@@ -1,4 +1,6 @@
 """The Walter agent: builds the prompt, calls Ollama, enforces guardrails."""
+from __future__ import annotations
+
 import json
 import logging
 import re
