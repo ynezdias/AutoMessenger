@@ -39,6 +39,30 @@ ABUSE = [
     "im reporting you to the attorney general",
 ]
 
+# A death notice never gets an automated answer; a human removes the record.
+BEREAVEMENT = [
+    "this is his wife. he passed away in march",
+    "he passed away",
+    "she died last year",
+    "my husband is deceased",
+    "hes no longer with us",
+    "mi esposo falleció",
+]
+
+# Lookalikes that must NOT stop the thread. "he passed" is underwriting slang
+# and a dead phone is a dead battery.
+NOT_BEREAVEMENT = [
+    "he passed underwriting",
+    "he passed the credit check",
+    "i passed on that offer",
+    "we passed on it",
+    "my phone died",
+    "the battery died",
+    "the deal is dead",
+    "sales are dead this month",
+    "my business is dying",
+]
+
 # Must still reach the model and get a real answer. Doubting a cold texter is
 # reasonable, and frustration is not abuse.
 LEGITIMATE = [
@@ -70,6 +94,12 @@ def main():
         # an opt-out inside the insult may legitimately claim it first
         if not (agent.is_abusive(text) or agent.is_hard_opt_out(text)):
             failures.append(f"MISSED abuse, model would answer it: {text!r}")
+    for text in BEREAVEMENT:
+        if not agent.is_bereavement(text):
+            failures.append(f"MISSED a death notice, model would answer it: {text!r}")
+    for text in NOT_BEREAVEMENT:
+        if agent.is_bereavement(text):
+            failures.append(f"false positive (bereavement), ends a live thread: {text!r}")
     for text in LEGITIMATE:
         if agent.is_threat(text):
             failures.append(f"false positive (threat), kills a live lead: {text!r}")
@@ -81,9 +111,11 @@ def main():
         for f in failures:
             print(" -", f)
         raise SystemExit(1)
-    print(f"all {len(THREATS) + len(ABUSE) + len(LEGITIMATE)} hostility checks passed "
-          f"({len(THREATS)} threats, {len(ABUSE)} abuse, "
-          f"{len(LEGITIMATE)} pass through)")
+    total = (len(THREATS) + len(ABUSE) + len(BEREAVEMENT)
+             + len(NOT_BEREAVEMENT) + len(LEGITIMATE))
+    print(f"all {total} hostility checks passed ({len(THREATS)} threats, "
+          f"{len(ABUSE)} abuse, {len(BEREAVEMENT)} bereavement, "
+          f"{len(NOT_BEREAVEMENT) + len(LEGITIMATE)} pass through)")
 
 
 if __name__ == "__main__":

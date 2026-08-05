@@ -62,6 +62,120 @@ _OPT_OUT_PHRASES = [
     r"\bborrame de\b|\bb[oó]rrame de\b",
 ]
 
+# Anything that means the merchant is talking about their actual business. The
+# junk screens below refuse to fire when this is present, so a real message can
+# never be silenced by a stray keyword.
+_FUNDING_CONTEXT = re.compile(
+    r"\b(fund\w*|financ\w+|capital|advance|loan|lend\w*|underwrit\w+|statements?|"
+    r"deposits?|bank\w*|revenue|sales|business|company|shop|store|restaurant|"
+    r"llc|inc|owner|upload|link|apply|applicat\w+|qualify|approv\w+|rate|term|"
+    r"paperwork|doc\w*|month|invoice|payroll|equipment|inventory|expansion|"
+    r"negocio|fondos|financiamiento|estados?|cuentas?|dep[oó]sitos?|empresa|"
+    r"prestamo|pr[eé]stamo|meses|documentos?)\b",
+    re.IGNORECASE,
+)
+
+# Probing the bot rather than talking business: arithmetic, trivia, word games,
+# echo traps, "are you a bot". These are unambiguous enough to fire even when a
+# funding word is present, because a real merchant never asks them.
+_OFFTOPIC_PROBES = [
+    r"\bwhat'?s? \d+\s*(times|plus|minus|divided by|[\+\-\*x×/])\s*\d+",
+    r"\bwhat is \d+\s*[\+\-\*x×/]\s*\d+",
+    # "are you a bot" is a fair question from someone cold-texted by a stranger,
+    # and some states require answering it, so it is deliberately NOT here. Only
+    # the absurd variants are.
+    r"\b(are|r) (you|u) (a |an )?(sentient|alive|conscious|self.aware|happy|"
+    r"lonely|bored|scared)\b",
+    r"\bdo (you|u) (dream|sleep|eat|feel|have feelings|get (bored|tired|lonely))\b",
+    r"\bwhat color are (you|u)\b",
+    r"\bspell \w+ backwards?\b",
+    r"\b(repeat|say) (exactly )?(what i|my) (just )?(said|typed|wrote|message)\b",
+    r"\bwhat did i (say|type|write|send) (in|first|earlier)\b",
+    r"\bsay (banana|the word|something|hello) \w*\b|\bsay banana\b",
+    r"\bname a (fruit|color|animal|number|word|country)\b",
+    r"\bknock knock\b",
+    r"\btell me a (joke|story|riddle)\b",
+    r"\bwhat'?s the weather\b",
+    r"\btranslate (this|it|that) (in)?to \w+",
+    r"\bjust checking if (you|u)'?re a bot\b",
+    r"\bwrite (me )?(a |an )?(poem|song|rap|essay|haiku)\b",
+    r"\bignore (this|that) if (you|u)'?re\b",
+]
+
+# Someone else's conversation arriving on this thread, or a bystander. Nobody
+# needs paging for a wrong number; the thread just goes quiet.
+_WRONG_NUMBER = [
+    r"\bwrong (chat|number|person|thread|convo|conversation)\b",
+    r"\b(love|luv) (you|u|ya) too\b",
+    r"\bgrab (some )?(milk|dinner|food|bread|eggs) on\b",
+    r"\bon (the|your) way home\b",
+    r"\b(i'?m|im) outside\b",
+    r"\b(kid|son|daughter|child|toddler|baby)s? (was |were )?(playing|messing) with"
+    r" (my|the) phone\b",
+    r"\b(cat|dog|kid) (stepped|walked|sat) on (my|the) (phone|keyboard)\b",
+    r"\bthis is \w+,? (i'?m|im) \d+\b",
+    r"\bmy (dad|mom|mum) is in the (shower|bath)\b",
+    r"\bpocket ?dial\b",
+]
+
+# Pleasantries with nothing to answer. Silence is the polite reply and a rep
+# does not need to hear about it.
+_SOCIAL_NOISE = [
+    r"\b(merry christmas|happy (new year|holidays|thanksgiving|easter|4th|fourth"
+    r" of july))\b",
+    r"\bgod bless\b",
+    r"\bhave a (good|great|blessed) (day|night|weekend|one)\b",
+    r"\b(feliz navidad|felices fiestas|dios te bendiga)\b",
+]
+
+# Someone selling TO Walter, or a competitor fishing. The rep should see these.
+# Every pattern needs the solicitation framing: a merchant saying "we do web
+# design services for clients" is describing their industry, which is exactly
+# the conversation Walter wants.
+_VENDOR_SPAM = [
+    # the offer has to point AT Walter. "we sell websites to small businesses"
+    # is a merchant naming their industry and must reach the model.
+    r"\b(we|i) (can |could )?(offer|provide|sell|do|build|make|design|handle|"
+    r"specialize in) .{0,40}\b(for|to) (you|your)\b",
+    r"\bdo you need .{0,25}(services|leads|website|traffic|help with your)\b",
+    r"\b(seo|web ?design|marketing|lead gen\w*) for your\b",
+    r"\b(i'?m|im|we'?re|were) (a |an )?(broker|iso|agent)s? too\b",
+    r"\bsplit (some )?(deals|commissions?)\b",
+    r"\bwant to (partner|jv|joint venture)\b",
+    r"\bbuy(ing)? (you|the (whole )?(company|business)) out\b",
+]
+
+# Carrier or handset noise: an attachment placeholder, an auto signature.
+_CHANNEL_NOISE = [
+    r"^\[?(photo|image|video|picture|attachment|sticker|gif|audio|voice ?"
+    r"(memo|message)|contact card|vcard)\]?$",
+    r"^sent from my (iphone|ipad|android|samsung|galaxy|phone)\b",
+    r"^(mms|sms) (message|not supported)",
+]
+
+
+def _matches(patterns, text: str) -> bool:
+    t = " ".join(text.lower().split())
+    return any(re.search(p, t) for p in patterns)
+
+
+def is_offtopic_probe(text: str) -> bool:
+    """Baiting the bot instead of talking business. Rep should see it."""
+    return _matches(_OFFTOPIC_PROBES, text) or _matches(_VENDOR_SPAM, text)
+
+
+def is_wrong_number(text: str) -> bool:
+    """Someone else's conversation, or handset noise. Nobody needs paging.
+
+    Guarded on funding context so "im outside the shop, send the link" stays a
+    live message.
+    """
+    if _FUNDING_CONTEXT.search(text):
+        return False
+    return (_matches(_WRONG_NUMBER, text) or _matches(_SOCIAL_NOISE, text)
+            or _matches(_CHANNEL_NOISE, text))
+
+
 # Bare acknowledgments that legitimately need no reply. Anything else that the
 # model wants to ignore gets challenged once (see respond()).
 TRIVIAL_ACKS = {"ok", "okay", "k", "kk", "thanks", "thank you", "ty", "got it",
@@ -213,6 +327,21 @@ _LEGAL_THREAT_RED_FLAGS = [
     r"legal action",
 ]
 
+# Someone writing to say the contact has died. The thread ends and a human
+# removes the record; a bot must never answer this at all. In the 8/4 eval run
+# the model replied "I'm so sorry to hear that Sam's passing was recent..." to a
+# widow, which is exactly the message that must never send itself.
+#
+# Deliberately narrow: "he passed" is underwriting slang and "my phone died" is
+# a dead battery, so only unambiguous phrasings are here.
+_BEREAVEMENT_RED_FLAGS = [
+    r"\bpassed away\b",
+    r"\b(he|she|they) (died|is dead|are dead)\b",
+    r"\bdeceased\b",
+    r"\bno longer with us\b",
+    r"\bfalleci[oó]\b|\bmuri[oó]\b|\bfallecid[oa]s?\b|\bque en paz descanse\b",
+]
+
 # Intimidation. The thread ends and a human is told: there is no sales reply to
 # "i know where you people work", and the 8/4 eval run had the model answer both
 # of these with a pitch about funding.
@@ -278,6 +407,11 @@ def is_wellbeing_red_flag(text: str) -> bool:
 def is_legal_threat(text: str) -> bool:
     t = " ".join(text.lower().split())
     return any(re.search(p, t) for p in _LEGAL_THREAT_RED_FLAGS)
+
+
+def is_bereavement(text: str) -> bool:
+    t = " ".join(text.lower().split())
+    return any(re.search(p, t) for p in _BEREAVEMENT_RED_FLAGS)
 
 
 def is_threat(text: str) -> bool:
@@ -484,6 +618,17 @@ def respond(convo: dict, incoming_text: str, extra_system: str = "") -> dict:
             "merchant_interested": False,
         }
 
+    # A death notice ends the thread and goes to a human, who removes the
+    # record. No automated message is ever an appropriate answer to this.
+    if is_bereavement(incoming_text):
+        log.warning("bereavement notice, stopping without model: %r", incoming_text)
+        return {
+            "action": "stop",
+            "reply": "",
+            "notify_rep": True,
+            "merchant_interested": False,
+        }
+
     if is_legal_threat(incoming_text):
         log.warning("legal threat, stopping without model: %r", incoming_text)
         return {
@@ -521,6 +666,30 @@ def respond(convo: dict, incoming_text: str, extra_system: str = "") -> dict:
             "action": "escalate_compliance",
             "reply": "",
             "notify_rep": True,
+            "merchant_interested": False,
+        }
+
+    # Baiting the bot, or someone selling to it. No reply, but a rep should see
+    # it: the 8/4 eval run had the model answering "whats 9 times 7" and
+    # "do you dream when nobody is texting you" with a pitch about funding.
+    if is_offtopic_probe(incoming_text):
+        log.info("off-topic probe, ignoring without model: %r", incoming_text)
+        return {
+            "action": "ignore",
+            "reply": "",
+            "notify_rep": True,
+            "merchant_interested": False,
+        }
+
+    # Someone else's conversation, a pleasantry, or handset noise. Silence is
+    # the whole answer and nobody needs paging for it.
+    if is_wrong_number(incoming_text):
+        log.info("wrong number or channel noise, ignoring without model: %r",
+                 incoming_text)
+        return {
+            "action": "ignore",
+            "reply": "",
+            "notify_rep": False,
             "merchant_interested": False,
         }
 
