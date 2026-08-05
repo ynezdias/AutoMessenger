@@ -125,6 +125,9 @@ PAGE = """<!doctype html>
            background: #0a84ff; color: white; }
   button:disabled { opacity: .5; }
   a { color: #6ab7ff; font-size: 12px; }
+  .b a { font-size: inherit; color: #6ab7ff; text-decoration: underline;
+         word-break: break-all; }
+  .merchant a { color: #fff; }
 </style></head><body>
 <h3>Walter &mdash; local test line <small id="status"></small></h3>
 <select id="who"></select>
@@ -135,6 +138,29 @@ a few minutes while the local model thinks - the page updates by itself.</div>
 <button id="send">Send</button></form>
 <p><a href="#" id="reset">start this conversation over</a></p>
 <script>
+// Render text into el, turning URLs into real anchors. Built from DOM nodes
+// rather than innerHTML so merchant-typed text can never inject markup.
+function linkify(el, text) {
+  const re = /https?:\\/\\/[^\\s]+/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last)
+      el.appendChild(document.createTextNode(text.slice(last, m.index)));
+    let url = m[0], trail = '';
+    const punct = url.match(/[.,!?;:)\\]]+$/);   // don't swallow sentence punctuation
+    if (punct) { trail = punct[0]; url = url.slice(0, -trail.length); }
+    const a = document.createElement('a');
+    a.href = url;
+    a.textContent = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    el.appendChild(a);
+    if (trail) el.appendChild(document.createTextNode(trail));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length)
+    el.appendChild(document.createTextNode(text.slice(last)));
+}
 const thread = document.getElementById('thread');
 const who = document.getElementById('who');
 const btn = document.getElementById('send');
@@ -158,7 +184,7 @@ function render(s) {
   for (const m of s.messages) {
     const d = document.createElement('div');
     d.className = 'b ' + (m.role === 'walter' ? 'walter' : 'merchant');
-    d.textContent = m.text;
+    linkify(d, m.text);
     thread.appendChild(d);
     if (m.role !== 'walter' && m.origin) {
       const c = document.createElement('div');

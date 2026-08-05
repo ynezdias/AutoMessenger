@@ -4,6 +4,8 @@ Modes:
   python -m server.main            poll SQS for inbound texts (production)
   python -m server.main --chat     interactive console test, no AWS needed
 """
+from __future__ import annotations
+
 import argparse
 import json
 import logging

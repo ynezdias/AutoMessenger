@@ -6,6 +6,8 @@ Usage:
 
 Contacts who already have a conversation on file, or who opted out, are skipped.
 """
+from __future__ import annotations
+
 import argparse
 import csv
 import json

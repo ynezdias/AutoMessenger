@@ -14,6 +14,8 @@ what would go out without sending anything:
 
     python -m server.followup --dry-run
 """
+from __future__ import annotations
+
 import logging
 import time
 
